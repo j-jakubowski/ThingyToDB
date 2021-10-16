@@ -5,8 +5,6 @@ import binascii
 
 class DBConnection:
   
-  con = None
-  cur = None
   dataBase = 'environment'
   fileName = dataBase + '.db'
 
@@ -18,18 +16,19 @@ class DBConnection:
   def saveData(self, measurement, time):
     
     self.addData(measurement['temperature'], 
-    0,0,0)
-                #  measurement['humidity'],
-                #  measurement['pressure'],
-                #  measurement['co2']
+                 measurement['humidity'],
+                 measurement['pressure'],
+                 measurement['eco2'],
+                 measurement['tvoc'],
+                 measurement['battery'])
                  
 
-  def addData(self, temperature, humidity, pressure, co2, timestamp = None):
+  def addData(self, temperature, humidity, pressure, eco2, tvoc, battery, timestamp = None):
     #add date/time
     id = 'F6:CD:CD:6D:62:09'
     if timestamp is None:
       timestamp = int(time.time())
-    self.cur.execute(f"INSERT into {self.dataBase} VALUES ({timestamp},'{id}', {temperature},{humidity}, {pressure}, {co2})")
+    self.cur.execute(f"INSERT into {self.dataBase} VALUES ({timestamp},'{id}', {temperature},{humidity}, {pressure}, {eco2}, {tvoc}, {battery})")
     self.con.commit()
 
   def __del__(self):
@@ -38,44 +37,53 @@ class DBConnection:
 class MyDelegate(thingy52.MyDelegate):
 
     def __init__(self):
-        self.measurements = dict()
+      self.measurements = dict()
+      self.measurements['eco2'] = 0
+      self.measurements['tvoc'] = 0
+      self.measurements['battery'] = 100
+      self.measurements['temperature'] = 23.0
+      self.measurements['pressure'] = 1000.0
+      self.measurements['humidity'] = 60
 
+    def addBatteryMeasurement(self, battery_level):
+      self.measurements['battery'] = battery_level
 
     def getCurrentMeasurement(self):
       return self.measurements
 
 
-    def handleNotification(self, hnd, data):
+    def handleNotification(self, handle, data):
         
-        # self.callback(1,2,3,4)
-
-        #update val in dict
-    
-        # Debug print repr(data)
-        if (hnd == thingy52.e_temperature_handle):
+        if (handle == thingy52.e_temperature_handle):
             teptep = binascii.b2a_hex(data)
             temperature = self._str_to_int(teptep[:-2]) + int(teptep[-2:], 16) * 0.01
             self.measurements['temperature'] = temperature
 
             print(f'Notification: Temp received:  {temperature} degCelsius')
             
-        elif (hnd == e_pressure_handle):
+        elif (handle == thingy52.e_pressure_handle):
             pressure_int, pressure_dec = self._extract_pressure_data(data)
-            print('Notification: Pressure received: {}.{} hPa'.format(
-                        pressure_int, pressure_dec))
+            pressure = pressure_int + pressure_dec * 0.01
+            self.measurements['pressure'] = pressure
 
-        elif (hnd == e_humidity_handle):
-            teptep = binascii.b2a_hex(data)
-            print('Notification: Humidity received: {} %'.format(self._str_to_int(teptep)))
+            print(f'Notification: Pressure received: {pressure} hPa')
 
-        elif (hnd == e_gas_handle):
+        elif (handle == thingy52.e_humidity_handle):
+            humidity = int(binascii.b2a_hex(data),16)
+            self.measurements['humidity'] = humidity
+
+            print(f'Notification: Humidity received: {humidity} %')
+
+        elif (handle == thingy52.e_gas_handle):
             eco2, tvoc = self._extract_gas_data(data)
-            print('Notification: Gas received: eCO2 ppm: {}, TVOC ppb: {} %'.format(eco2, tvoc))
- 
+            self.measurements['eco2'] = eco2
+            self.measurements['tvoc'] = tvoc
+
+            print(f'Notification: Gas received: eCO2 ppm: {eco2}, TVOC ppb: {tvoc} %')
+
         else:
-            teptep = binascii.b2a_hex(data)
-            print('Notification: UNKOWN: hnd {}, data {}'.format(hnd, teptep))
-#Write your own delegate
+            print(f'Notification: UNKOWN: handle {handle}')
+
 
 def main():
     thingy = thingy52.Thingy52('F6:CD:CD:6D:62:09') 
@@ -92,9 +100,17 @@ def main():
       thingy.environment.enable()
 
       second_to_ms = 1000
-      minute_to_sec  = 60
-      thingy.environment.configure(temp_int = 1 * second_to_ms, press_int = 60 * second_to_ms, humid_int = 60 * second_to_ms, gas_mode_int = 3)
+      thingy.environment.configure(temp_int =  5* 60 * second_to_ms,
+                                  press_int = 5 * 60 * second_to_ms,
+                                  humid_int = 5 * 60 * second_to_ms,
+                                  gas_mode_int = 3)
       thingy.environment.set_temperature_notification(True)
+      thingy.environment.set_gas_notification(True)
+      thingy.environment.set_humidity_notification(True)
+      thingy.environment.set_pressure_notification(True)
+
+      thingy.battery.enable()
+
 
       last_snapshot = time.time()
       while True:
@@ -103,6 +119,7 @@ def main():
         
         interval = 20
         if int(now - last_snapshot) > interval :
+          delegate.addBatteryMeasurement(thingy.battery.read())
           print("saving data to DB")
           last_snapshot = now
           db.saveData(delegate.getCurrentMeasurement(), now)
